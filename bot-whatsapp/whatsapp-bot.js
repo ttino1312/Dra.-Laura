@@ -3,8 +3,14 @@
 // ============================================
 
 const fs = require('fs');
+const express = require('express');
+const cors = require('cors');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
+
+const app = express();
+app.use(cors());
+app.use(express.json());
 
 console.log('🚀 Iniciando bot de WhatsApp...');
 console.log('📁 Directorio actual:', __dirname);
@@ -13,12 +19,52 @@ console.log('📁 Directorio actual:', __dirname);
 // CONFIGURACIÓN
 // ============================================
 
-// NÚMERO DE LA DOCTORA
-const NUMERO_DOCTORA = '5491161365346'; // 0336 154-7080
+const NUMERO_DOCTORA = '5491161365346';
 
-// Archivos
-const archivoTurnos = '../turnos.json';
-const archivoEnviados = '../turnos-enviados.json';
+const archivoTurnos = './turnos.json';
+const archivoEnviados = './turnos-enviados.json';
+
+// ============================================
+// API REST - RECIBIR TURNOS DEL FORMULARIO
+// ============================================
+
+app.post('/api/turno', (req, res) => {
+    try {
+        const turno = req.body;
+
+        console.log('\n🆕 TURNO RECIBIDO DESDE EL FORMULARIO:');
+        console.log('   Nombre:', turno.nombre);
+        console.log('   Teléfono:', turno.telefono);
+        console.log('   Servicio:', turno.servicio);
+        console.log('   Fecha:', turno.fecha, '|', turno.horario);
+
+        // Leer turnos existentes
+        let turnos = [];
+        if (fs.existsSync(archivoTurnos)) {
+            const contenido = fs.readFileSync(archivoTurnos, 'utf8');
+            turnos = JSON.parse(contenido);
+        }
+
+        // Agregar nuevo turno
+        turnos.push(turno);
+
+        // Guardar en turnos.json
+        fs.writeFileSync(archivoTurnos, JSON.stringify(turnos, null, 2));
+        console.log('✅ Turno guardado en turnos.json - ID:', turno.id);
+
+        res.json({ ok: true, id: turno.id });
+
+    } catch (error) {
+        console.error('❌ Error al guardar turno:', error.message);
+        res.status(500).json({ ok: false, error: error.message });
+    }
+});
+
+// Iniciar servidor API
+app.listen(3001, () => {
+    console.log('🌐 Servidor API corriendo en http://localhost:3001');
+    console.log('📬 Endpoint listo: POST http://localhost:3001/api/turno');
+});
 
 // ============================================
 // CLIENTE DE WHATSAPP
@@ -76,16 +122,13 @@ client.on('ready', () => {
     console.log('✅ BOT CONECTADO Y FUNCIONANDO!');
     console.log('========================================');
     console.log('🔍 Monitoreando nuevos turnos cada 10 segundos...');
-    console.log('📂 Buscando archivo:', archivoTurnos);
     console.log('📱 Número de la doctora:', NUMERO_DOCTORA);
     console.log('========================================\n');
-    
-    // Verificar turnos cada 10 segundos
+
     setInterval(() => {
         verificarNuevosTurnos();
     }, 10000);
-    
-    // Verificar inmediatamente al iniciar
+
     setTimeout(() => {
         console.log('🔍 Primera verificación de turnos...');
         verificarNuevosTurnos();
@@ -99,56 +142,39 @@ client.on('disconnected', (reason) => {
 // ============================================
 // FUNCIÓN: VERIFICAR NUEVOS TURNOS
 // ============================================
+
 async function verificarNuevosTurnos() {
     try {
-        console.log('🔍 Verificando turnos...', new Date().toLocaleTimeString());
-        
         if (!fs.existsSync(archivoTurnos)) {
-            console.log('⚠️ Archivo turnos.json no existe todavía');
             return;
         }
-        
+
         const contenido = fs.readFileSync(archivoTurnos, 'utf8');
         const turnos = JSON.parse(contenido);
-        
-        console.log('📊 Total de turnos en archivo:', turnos.length);
-        
-        if (!turnos || turnos.length === 0) {
-            console.log('⚠️ No hay turnos en el archivo');
-            return;
-        }
-        
-        // Leer turnos enviados
+
+        if (!turnos || turnos.length === 0) return;
+
         let turnosEnviados = [];
         if (fs.existsSync(archivoEnviados)) {
             const enviados = fs.readFileSync(archivoEnviados, 'utf8');
             turnosEnviados = JSON.parse(enviados);
         }
-        
-        // Buscar turnos nuevos
+
         for (const turno of turnos) {
             if (!turnosEnviados.includes(turno.id)) {
-                console.log(`\n🆕 NUEVO TURNO DETECTADO!`);
-                console.log(`   ID: ${turno.id}`);
-                console.log(`   Nombre: ${turno.nombre}`);
-                console.log(`   Teléfono: ${turno.telefono}`);
-                console.log(`   Fecha: ${turno.fecha} ${turno.horario}`);
-                
-                // Enviar mensaje al PACIENTE
+                console.log(`\n🆕 PROCESANDO TURNO: ${turno.nombre} - ${turno.fecha}`);
+
                 const enviadoPaciente = await enviarMensajePaciente(turno);
-                
-                // Enviar mensaje a la DOCTORA
                 const enviadoDoctora = await enviarMensajeDoctora(turno);
-                
+
                 if (enviadoPaciente || enviadoDoctora) {
-                    // Marcar como enviado
                     turnosEnviados.push(turno.id);
                     fs.writeFileSync(archivoEnviados, JSON.stringify(turnosEnviados, null, 2));
-                    console.log(`✅ Turno ${turno.id} procesado\n`);
+                    console.log(`✅ Turno ${turno.id} procesado y marcado como enviado\n`);
                 }
             }
         }
-        
+
     } catch (error) {
         console.error('❌ Error al verificar turnos:', error.message);
     }
@@ -157,73 +183,60 @@ async function verificarNuevosTurnos() {
 // ============================================
 // FUNCIÓN: MENSAJE AL PACIENTE
 // ============================================
+
 async function enviarMensajePaciente(turno) {
     try {
-        console.log(`\n📤 ENVIANDO MENSAJE AL PACIENTE: ${turno.nombre}`);
-        
-        // Normalizar número
+        console.log(`📤 Enviando confirmación al paciente: ${turno.nombre}`);
+
         let numero = normalizarNumero(turno.telefono);
-        
         if (!numero) {
             console.error(`❌ Número inválido: ${turno.telefono}`);
             return false;
         }
-        
+
         const chatId = numero + '@c.us';
-        console.log(`   Chat ID paciente: ${chatId}`);
-        
-        // Verificar si existe en WhatsApp
+
         try {
             const existe = await client.isRegisteredUser(chatId);
             if (!existe) {
-                console.error(`❌ El número ${numero} NO está en WhatsApp`);
+                console.error(`❌ El número ${numero} no está registrado en WhatsApp`);
                 return false;
             }
-            console.log(`   ✅ Número verificado en WhatsApp`);
         } catch (e) {
-            console.warn(`   ⚠️ No se pudo verificar, intentando enviar...`);
+            console.warn(`⚠️ No se pudo verificar el número, intentando enviar de todas formas...`);
         }
-        
-        // Crear mensaje
+
         const fechaFormateada = formatearFecha(turno.fecha);
-        
-        const mensaje = `
-Hola ${turno.nombre}! 👋
+
+        const mensaje = `Hola ${turno.nombre}! 👋
 
 ✅ *Recibimos tu solicitud de turno*
 
 📋 *Detalles de tu solicitud:*
+🩺 Servicio: *${turno.servicio}*
+📍 Modalidad: *${turno.modalidad}*
 📅 Fecha: *${fechaFormateada}*
-🕐 Horario: *${turno.horario} hs*
-${turno.motivo ? `📝 Motivo: ${turno.motivo}\n` : ''}
-
+🕐 Horario: *${turno.horario}*
+${turno.motivo ? `💬 Mensaje: ${turno.motivo}\n` : ''}
 🔔 *Próximos pasos:*
-Te confirmaremos tu turno a la brevedad por este medio. En caso de no poder atenderte en el horario solicitado, te ofreceremos alternativas.
+Te confirmaremos tu turno a la brevedad por este medio. En caso de no poder atenderte en ese horario, te ofreceremos alternativas.
 
 📍 *Consultorios Río Piedras*
 Río Piedras 372 - Planta 3, Consultorio D
 Morón, Buenos Aires
 
 ⚠️ *Política de cancelación:*
-Los turnos deben cancelarse con 24 horas de anticipación.
-
-📞 *Consultas:*
-Podés escribirnos por este número para cualquier duda.
-
-*PORQUE TU SALUD MENTAL NOS IMPORTA* 💙
+Los turnos deben cancelarse con al menos 24 horas de anticipación.
 
 _Dra. María Laura Hernández Rico_
-_Especialista en Psiquiatría y Psicología Médica_
-        `.trim();
-        
-        // Enviar
+_Especialista en Psiquiatría y Psicología Médica_ 💙`;
+
         await client.sendMessage(chatId, mensaje);
-        console.log(`✅ Mensaje enviado al paciente: ${turno.nombre}`);
-        
+        console.log(`✅ Confirmación enviada a: ${turno.nombre} (${numero})`);
         return true;
-        
+
     } catch (error) {
-        console.error(`❌ Error al enviar mensaje al paciente:`, error.message);
+        console.error(`❌ Error al enviar al paciente:`, error.message);
         return false;
     }
 }
@@ -231,43 +244,35 @@ _Especialista en Psiquiatría y Psicología Médica_
 // ============================================
 // FUNCIÓN: MENSAJE A LA DOCTORA
 // ============================================
+
 async function enviarMensajeDoctora(turno) {
     try {
-        console.log(`\n📤 ENVIANDO NOTIFICACIÓN A LA DOCTORA`);
-        
+        console.log(`📤 Enviando notificación a la Dra. Laura`);
+
         const chatIdDoctora = NUMERO_DOCTORA + '@c.us';
-        console.log(`   Chat ID doctora: ${chatIdDoctora}`);
-        
-        // Crear mensaje para la doctora
         const fechaFormateada = formatearFecha(turno.fecha);
-        
-        const mensaje = `
-🔔 *NUEVA SOLICITUD DE TURNO*
+
+        const mensaje = `🔔 *NUEVA SOLICITUD DE TURNO*
 
 👤 *Paciente:* ${turno.nombre}
-📧 *Email:* ${turno.email}
 📱 *Teléfono:* ${turno.telefono}
-
+${turno.email ? `📧 *Email:* ${turno.email}\n` : ''}
+🩺 *Servicio:* ${turno.servicio}
+📍 *Modalidad:* ${turno.modalidad}
 📅 *Fecha solicitada:* ${fechaFormateada}
-🕐 *Horario:* ${turno.horario} hs
-
-${turno.motivo ? `📝 *Motivo de consulta:*\n${turno.motivo}\n` : ''}
-
+🕐 *Horario:* ${turno.horario}
+${turno.motivo ? `\n💬 *Mensaje del paciente:*\n${turno.motivo}\n` : ''}
 ⏰ *Recibido:* ${turno.fecha_registro}
 🆔 *ID:* ${turno.id}
 
-_Solicitud registrada en el sistema._
-_Ya se envió confirmación al paciente._
-        `.trim();
-        
-        // Enviar
+_El paciente ya recibió la confirmación automática._`;
+
         await client.sendMessage(chatIdDoctora, mensaje);
-        console.log(`✅ Notificación enviada a la doctora`);
-        
+        console.log(`✅ Notificación enviada a la Dra. Laura`);
         return true;
-        
+
     } catch (error) {
-        console.error(`❌ Error al enviar mensaje a la doctora:`, error.message);
+        console.error(`❌ Error al enviar a la doctora:`, error.message);
         return false;
     }
 }
@@ -275,51 +280,47 @@ _Ya se envió confirmación al paciente._
 // ============================================
 // FUNCIÓN: NORMALIZAR NÚMERO
 // ============================================
+
 function normalizarNumero(telefono) {
-    // Limpiar
     let numero = telefono.replace(/\D/g, '');
-    
-    if (numero.length < 10) {
-        return null;
-    }
-    
-    // Si empieza con 15, cambiar a código de área
+
+    if (numero.length < 10) return null;
+
     if (numero.startsWith('15')) {
-        // Asumimos Buenos Aires (11)
         numero = '11' + numero.substring(2);
     }
-    
-    // Quitar 0 inicial
+
     if (numero.startsWith('0')) {
         numero = numero.substring(1);
     }
-    
-    // Agregar código de país Argentina
+
     if (!numero.startsWith('549')) {
         numero = '549' + numero;
     }
-    
+
     return numero;
 }
 
 // ============================================
 // FUNCIÓN: FORMATEAR FECHA
 // ============================================
+
 function formatearFecha(fecha) {
     const fechaObj = new Date(fecha + 'T12:00:00');
-    return fechaObj.toLocaleDateString('es-AR', { 
-        weekday: 'long', 
-        year: 'numeric', 
-        month: 'long', 
-        day: 'numeric' 
+    return fechaObj.toLocaleDateString('es-AR', {
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric'
     });
 }
 
 // ============================================
 // INICIAR BOT
 // ============================================
+
 client.initialize().catch(err => {
-    console.error('❌ Error al inicializar el bot:', err);
+    console.error('❌ Error al inicializar:', err);
 });
 
 console.log('⏳ Esperando conexión con WhatsApp Web...\n');
